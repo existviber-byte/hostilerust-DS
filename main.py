@@ -22,10 +22,9 @@ class RCONClient:
     def connect(self):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)
+            self.socket.settimeout(10)
             self.socket.connect((self.host, self.port))
             
-            # Аутентификация
             packet_id = 1
             packet_type = 3
             body = self.password
@@ -33,17 +32,16 @@ class RCONClient:
             packet_len = len(packet)
             self.socket.send(struct.pack('<i', packet_len) + packet)
             
-            # Получаем ответ
             len_data = self.socket.recv(4)
             if len(len_data) < 4:
                 return False
             packet_len = struct.unpack('<i', len_data)[0]
             self.socket.recv(packet_len)
             
-            log.info("RCON подключен успешно")
+            log.info("RCON подключен")
             return True
         except Exception as e:
-            log.error(f"RCON ошибка при подключении: {e}")
+            log.error(f"RCON ошибка: {e}")
             return False
     
     def send_command(self, command):
@@ -59,119 +57,69 @@ class RCONClient:
             packet_len = len(packet)
             self.socket.send(struct.pack('<i', packet_len) + packet)
             
-            # Получаем ответ
             len_data = self.socket.recv(4)
             if len(len_data) < 4:
                 return None
             packet_len = struct.unpack('<i', len_data)[0]
             response = self.socket.recv(packet_len)
             
-            # Парсим ответ
             if len(response) > 8:
-                body = response[8:-2].decode('utf-8')
-                return body
+                return response[8:-2].decode('utf-8')
             return None
         except Exception as e:
-            log.error(f"Ошибка отправки RCON команды: {e}")
+            log.error(f"Ошибка RCON команды: {e}")
             return None
     
     def send_chat_message(self, message):
-        """Отправка сообщения в игровой чат"""
-        # Экранируем кавычки
         message = message.replace('"', '\\"')
         command = f'say "{message}"'
         return self.send_command(command)
-    
-    def close(self):
-        if self.socket:
-            self.socket.close()
-            self.socket = None
 
 class HostileRustBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        
         super().__init__(command_prefix='!', intents=intents)
-        
-        self.game_channel = None
-        self.webhook = None
         self.rcon = None
-        self.start_time = datetime.now()
     
     async def setup_hook(self):
-        # Настраиваем канал
-        self.game_channel = self.get_channel(GAME_CHAT_CHANNEL_ID)
-        if self.game_channel:
-            webhooks = await self.game_channel.webhooks()
-            if webhooks:
-                self.webhook = webhooks[0]
-            else:
-                self.webhook = await self.game_channel.create_webhook(name="Rust Game Chat")
-            log.info("Webhook настроен")
-        
-        # Подключаемся к RCON
         if RCON_PASSWORD:
             self.rcon = RCONClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
             await asyncio.get_event_loop().run_in_executor(None, self.rcon.connect)
             log.info("RCON инициализирован")
-        else:
-            log.warning("RCON пароль не задан! Сообщения из Discord не будут уходить в игру")
     
     async def on_ready(self):
         log.info("=" * 50)
         log.info(f"Бот {self.user.name} запущен!")
         log.info(f"Сервер: {SERVER_NAME}")
         log.info(f"IP: {SERVER_IP}")
-        log.info(f"RCON: {'Подключен' if self.rcon else 'Не настроен'}")
+        log.info(f"RCON: {RCON_HOST}:{RCON_PORT}")
         log.info("=" * 50)
-        
         await self.change_presence(activity=discord.Game(name=f"x2 | {SERVER_IP}"))
-        
-        # Отправляем приветствие в канал
-        if self.game_channel:
-            embed = discord.Embed(
-                title="✅ БОТ ЗАПУЩЕН",
-                description=f"Связь с сервером установлена!\n\n"
-                           f"🎮 IP: `{SERVER_IP}`\n"
-                           f"💬 Пишите в этом канале - сообщения уйдут в игру!",
-                color=discord.Color.green()
-            )
-            await self.game_channel.send(embed=embed)
     
-    async def on_message(self, message: discord.Message):
+    async def on_message(self, message):
         if message.author.bot:
             return
-        
         if message.channel.id != GAME_CHAT_CHANNEL_ID:
             await self.process_commands(message)
             return
-        
         if message.content.startswith('!'):
             await self.process_commands(message)
             return
         
-        # Отправляем в игру
         if self.rcon:
-            game_message = f"[DISCORD] {message.author.display_name}: {message.clean_content}"
-            
-            # Отправляем через RCON
+            game_msg = f"[DISCORD] {message.author.display_name}: {message.clean_content}"
             result = await asyncio.get_event_loop().run_in_executor(
-                None, self.rcon.send_chat_message, game_message
+                None, self.rcon.send_chat_message, game_msg
             )
-            
             if result is not None:
                 await message.add_reaction('✅')
                 log.info(f"В игру: {message.author.display_name}: {message.clean_content}")
             else:
                 await message.add_reaction('❌')
-                log.error(f"Не удалось отправить в игру: {message.author.display_name}: {message.clean_content}")
-        else:
-            await message.add_reaction('⚠️')
-            log.warning("RCON не настроен - сообщение не отправлено")
+                log.error(f"Не отправлено: {message.author.display_name}")
     
-    # Команды
     @commands.command(name='ip')
     async def cmd_ip(self, ctx):
         await ctx.send(f"🎮 IP сервера: `{SERVER_IP}`")
@@ -196,29 +144,27 @@ class HostileRustBot(commands.Bot):
     
     @commands.command(name='rcon')
     async def cmd_rcon_test(self, ctx):
-        """Проверка RCON подключения"""
         if not self.rcon:
-            await ctx.send("❌ RCON не настроен! Добавьте переменные: RCON_HOST, RCON_PORT, RCON_PASSWORD")
+            await ctx.send("❌ RCON не настроен! Проверьте переменные окружения.")
             return
         
-        await ctx.send("🔄 Проверка RCON подключения...")
-        
+        await ctx.send("🔄 Проверка RCON...")
         result = await asyncio.get_event_loop().run_in_executor(
             None, self.rcon.send_command, "status"
         )
         
         if result:
-            await ctx.send(f"✅ RCON работает!\n```{result[:500]}```")
+            await ctx.send(f"✅ RCON работает!\n```{result[:300]}```")
         else:
-            await ctx.send("❌ RCON не отвечает! Проверьте:\n1. RCON включен в server.cfg\n2. Правильный порт\n3. Правильный пароль")
+            await ctx.send("❌ RCON не отвечает! Проверьте порт и пароль.")
     
     @commands.command(name='help_bot')
     async def cmd_help(self, ctx):
         embed = discord.Embed(title="🤖 Команды", color=discord.Color.blue())
         embed.add_field(name="!ip", value="IP сервера")
-        embed.add_field(name="!info", value="Информация о сервере")
-        embed.add_field(name="!wipe", value="Информация о вайпе")
-        embed.add_field(name="!rcon", value="Проверка RCON (админ)")
+        embed.add_field(name="!info", value="Информация")
+        embed.add_field(name="!wipe", value="Вайп")
+        embed.add_field(name="!rcon", value="Проверка RCON")
         await ctx.send(embed=embed)
 
 if __name__ == "__main__":
