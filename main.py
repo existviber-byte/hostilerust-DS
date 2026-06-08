@@ -75,98 +75,98 @@ class RCONClient:
         command = f'say "{message}"'
         return self.send_command(command)
 
-class HostileRustBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        super().__init__(command_prefix='!', intents=intents)
-        self.rcon = None
+bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+rcon = None
+
+@bot.event
+async def on_ready():
+    global rcon
     
-    async def setup_hook(self):
-        if RCON_PASSWORD:
-            self.rcon = RCONClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
-            await asyncio.get_event_loop().run_in_executor(None, self.rcon.connect)
-            log.info("RCON инициализирован")
+    # Подключаем RCON
+    if RCON_PASSWORD:
+        rcon = RCONClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
+        await asyncio.get_event_loop().run_in_executor(None, rcon.connect)
     
-    async def on_ready(self):
-        log.info("=" * 50)
-        log.info(f"Бот {self.user.name} запущен!")
-        log.info(f"Сервер: {SERVER_NAME}")
-        log.info(f"IP: {SERVER_IP}")
-        log.info(f"RCON: {RCON_HOST}:{RCON_PORT}")
-        log.info("=" * 50)
-        await self.change_presence(activity=discord.Game(name=f"x2 | {SERVER_IP}"))
+    log.info("=" * 50)
+    log.info(f"Бот {bot.user.name} запущен!")
+    log.info(f"Сервер: {SERVER_NAME}")
+    log.info(f"IP: {SERVER_IP}")
+    log.info(f"RCON: {RCON_HOST}:{RCON_PORT}")
+    log.info("=" * 50)
     
-    async def on_message(self, message):
-        if message.author.bot:
-            return
-        if message.channel.id != GAME_CHAT_CHANNEL_ID:
-            await self.process_commands(message)
-            return
-        if message.content.startswith('!'):
-            await self.process_commands(message)
-            return
-        
-        if self.rcon:
-            game_msg = f"[DISCORD] {message.author.display_name}: {message.clean_content}"
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, self.rcon.send_chat_message, game_msg
-            )
-            if result is not None:
-                await message.add_reaction('✅')
-                log.info(f"В игру: {message.author.display_name}: {message.clean_content}")
-            else:
-                await message.add_reaction('❌')
-                log.error(f"Не отправлено: {message.author.display_name}")
+    await bot.change_presence(activity=discord.Game(name=f"x2 | {SERVER_IP}"))
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
     
-    @commands.command(name='ip')
-    async def cmd_ip(self, ctx):
-        await ctx.send(f"🎮 IP сервера: `{SERVER_IP}`")
+    if message.channel.id == GAME_CHAT_CHANNEL_ID:
+        if not message.content.startswith('!'):
+            # Отправляем в игру
+            if rcon:
+                game_msg = f"[DISCORD] {message.author.display_name}: {message.clean_content}"
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, rcon.send_chat_message, game_msg
+                )
+                if result is not None:
+                    await message.add_reaction('✅')
+                    log.info(f"В игру: {message.author.display_name}: {message.clean_content}")
+                else:
+                    await message.add_reaction('❌')
+                    log.error(f"Не отправлено: {message.author.display_name}")
     
-    @commands.command(name='info')
-    async def cmd_info(self, ctx):
-        embed = discord.Embed(title=f"ℹ️ {SERVER_NAME}", color=discord.Color.gold())
-        embed.add_field(name="IP", value=f"`{SERVER_IP}`")
-        embed.add_field(name="Вайп", value="Каждый четверг в 12:00 МСК")
-        await ctx.send(embed=embed)
+    await bot.process_commands(message)
+
+# ========== КОМАНДЫ ==========
+
+@bot.command(name='ip')
+async def cmd_ip(ctx):
+    await ctx.send(f"🎮 IP сервера: `{SERVER_IP}`")
+
+@bot.command(name='info')
+async def cmd_info(ctx):
+    embed = discord.Embed(title=f"ℹ️ {SERVER_NAME}", color=discord.Color.gold())
+    embed.add_field(name="IP", value=f"`{SERVER_IP}`")
+    embed.add_field(name="Вайп", value="Каждый четверг в 12:00 МСК")
+    await ctx.send(embed=embed)
+
+@bot.command(name='wipe')
+async def cmd_wipe(ctx):
+    now = datetime.now()
+    days = (3 - now.weekday()) % 7
+    if days == 0 and now.hour >= 12:
+        days = 7
+    next_wipe = now + timedelta(days=days)
+    next_wipe = next_wipe.replace(hour=12, minute=0)
+    delta = next_wipe - now
+    await ctx.send(f"💣 Следующий вайп: {next_wipe.strftime('%d.%m.%Y в 12:00')}\n⏳ Осталось: {delta.days} д. {delta.seconds//3600} ч.")
+
+@bot.command(name='rcon')
+async def cmd_rcon(ctx):
+    if not rcon:
+        await ctx.send("❌ RCON не настроен! Проверьте переменные окружения.")
+        return
     
-    @commands.command(name='wipe')
-    async def cmd_wipe(self, ctx):
-        now = datetime.now()
-        days = (3 - now.weekday()) % 7
-        if days == 0 and now.hour >= 12:
-            days = 7
-        next_wipe = now + timedelta(days=days)
-        next_wipe = next_wipe.replace(hour=12, minute=0)
-        delta = next_wipe - now
-        await ctx.send(f"💣 Следующий вайп: {next_wipe.strftime('%d.%m.%Y в 12:00')}\n⏳ Осталось: {delta.days} д. {delta.seconds//3600} ч.")
+    await ctx.send("🔄 Проверка RCON...")
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, rcon.send_command, "status"
+    )
     
-    @commands.command(name='rcon')
-    async def cmd_rcon_test(self, ctx):
-        if not self.rcon:
-            await ctx.send("❌ RCON не настроен! Проверьте переменные окружения.")
-            return
-        
-        await ctx.send("🔄 Проверка RCON...")
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, self.rcon.send_command, "status"
-        )
-        
-        if result:
-            await ctx.send(f"✅ RCON работает!\n```{result[:300]}```")
-        else:
-            await ctx.send("❌ RCON не отвечает! Проверьте порт и пароль.")
-    
-    @commands.command(name='help_bot')
-    async def cmd_help(self, ctx):
-        embed = discord.Embed(title="🤖 Команды", color=discord.Color.blue())
-        embed.add_field(name="!ip", value="IP сервера")
-        embed.add_field(name="!info", value="Информация")
-        embed.add_field(name="!wipe", value="Вайп")
-        embed.add_field(name="!rcon", value="Проверка RCON")
-        await ctx.send(embed=embed)
+    if result:
+        await ctx.send(f"✅ RCON работает!\n```{result[:300]}```")
+    else:
+        await ctx.send("❌ RCON не отвечает! Проверьте порт и пароль.")
+
+@bot.command(name='help_bot')
+async def cmd_help(ctx):
+    embed = discord.Embed(title="🤖 Команды", color=discord.Color.blue())
+    embed.add_field(name="!ip", value="IP сервера")
+    embed.add_field(name="!info", value="Информация")
+    embed.add_field(name="!wipe", value="Вайп")
+    embed.add_field(name="!rcon", value="Проверка RCON")
+    embed.add_field(name="!help_bot", value="Помощь")
+    await ctx.send(embed=embed)
 
 if __name__ == "__main__":
-    bot = HostileRustBot()
     bot.run(DISCORD_TOKEN)
