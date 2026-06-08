@@ -75,14 +75,18 @@ class RCONClient:
         command = f'say "{message}"'
         return self.send_command(command)
 
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+# Упрощенные intents - только самые необходимые
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True  # Нужен для приветствий
+
+bot = commands.Bot(command_prefix='!', intents=intents)
 rcon = None
 
 @bot.event
 async def on_ready():
     global rcon
     
-    # Подключаем RCON
     if RCON_PASSWORD:
         rcon = RCONClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
         await asyncio.get_event_loop().run_in_executor(None, rcon.connect)
@@ -103,7 +107,6 @@ async def on_message(message):
     
     if message.channel.id == GAME_CHAT_CHANNEL_ID:
         if not message.content.startswith('!'):
-            # Отправляем в игру
             if rcon:
                 game_msg = f"[DISCORD] {message.author.display_name}: {message.clean_content}"
                 result = await asyncio.get_event_loop().run_in_executor(
@@ -117,8 +120,6 @@ async def on_message(message):
                     log.error(f"Не отправлено: {message.author.display_name}")
     
     await bot.process_commands(message)
-
-# ========== КОМАНДЫ ==========
 
 @bot.command(name='ip')
 async def cmd_ip(ctx):
